@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	designW = 1280
+	designH = 720
 	screenW = 1280
 	screenH = 720
 )
@@ -22,6 +24,8 @@ type Game struct {
 	Renderer *Renderer
 	Cmd      *CommandProcessor
 	WorldMap WorldMap
+	ScaleX   float64
+	ScaleY   float64
 }
 
 func main() {
@@ -34,17 +38,28 @@ func main() {
 }
 
 func NewGame() *Game {
+	assets := LoadAssets()
+	sx := float64(screenW) / designW
+	sy := float64(screenH) / designH
 	return &Game{
 		State:    NewGameState(),
 		UI:       NewUIState(),
-		Renderer: NewRenderer(),
+		Renderer: NewRenderer(assets, sx, sy),
 		Cmd:      NewCommandProcessor(),
 		WorldMap: BuildWorldMap(),
+		ScaleX:   sx,
+		ScaleY:   sy,
 	}
 }
 
+func scaleX(v float64) float64 { return v * (float64(screenW) / designW) }
+func scaleY(v float64) float64 { return v * (float64(screenH) / designH) }
+
 func (g *Game) Update() error {
 	g.UI.UpdateInput()
+	if inpututil.IsKeyJustPressed(ebiten.KeyF11) {
+		ebiten.SetFullscreen(!ebiten.IsFullscreen())
+	}
 	_, wheelY := ebiten.Wheel()
 	if wheelY != 0 {
 		g.UI.LogScroll = math.Max(0, g.UI.LogScroll-wheelY)
@@ -216,53 +231,256 @@ func (g *Game) submitCommand(cmd string) {
 }
 
 func (g *Game) drawLayout(screen *ebiten.Image) {
-	pad := g.Renderer.Tokens.Spacing["md"]
+	pad := scaleX(16)
+	gap := scaleY(12)
 	g.UI.Tooltip = nil
-	appBar := Rect{X: 0, Y: 0, W: screenW, H: 48}
-	leftPanel := Rect{X: pad, Y: appBar.H + pad, W: 320, H: 520}
-	centerPanel := Rect{X: leftPanel.X + leftPanel.W + pad, Y: appBar.H + pad, W: 560, H: 520}
-	rightPanel := Rect{X: centerPanel.X + centerPanel.W + pad, Y: appBar.H + pad, W: 320, H: 520}
-	bottomPanel := Rect{X: pad, Y: leftPanel.Y + leftPanel.H + pad, W: screenW - pad*2, H: 130}
 
-	g.drawAppBar(screen, appBar)
-	g.drawMapPanel(screen, leftPanel)
-	g.drawCenterPanel(screen, centerPanel)
-	g.drawRightPanel(screen, rightPanel)
-	g.drawBottomPanel(screen, bottomPanel)
+	leftColW := (float64(screenW) - pad*3) * 0.55
+	rightColW := (float64(screenW) - pad*3) * 0.45
+	colY := pad
+	colH := float64(screenH) - pad*2
+
+	// Left column: terminal (main window), map, vitals
+	termH := colH * 0.72
+	mapH := colH * 0.18
+	vitalsH := colH * 0.10
+
+	termRect := Rect{X: pad, Y: colY, W: leftColW, H: termH}
+	colY += termH + gap
+	mapRect := Rect{X: pad, Y: colY, W: leftColW, H: mapH}
+	colY += mapH + gap
+	vitalsRect := Rect{X: pad, Y: colY, W: leftColW, H: vitalsH}
+
+	g.drawTerminalPanel(screen, termRect)
+	g.drawMapPanel(screen, mapRect)
+	g.drawVitalsPanel(screen, vitalsRect)
+
+	// Right column: load/save, inventory, ship status
+	colY = pad
+	loadSaveH := scaleY(36)
+	restH := colH - loadSaveH - gap*2
+	invH := restH / 2
+	shipH := restH / 2
+
+	loadSaveRect := Rect{X: pad + leftColW + pad, Y: colY, W: rightColW, H: loadSaveH}
+	colY += loadSaveH + gap
+	invRect := Rect{X: pad + leftColW + pad, Y: colY, W: rightColW, H: invH}
+	colY += invH + gap
+	shipRect := Rect{X: pad + leftColW + pad, Y: colY, W: rightColW, H: shipH}
+
+	g.drawLoadSavePanel(screen, loadSaveRect)
+	g.drawInventoryPanel(screen, invRect)
+	g.drawShipStatusPanel(screen, shipRect)
 }
 
-func (g *Game) drawAppBar(screen *ebiten.Image, rect Rect) {
-	drawRoundedRect(screen, rect, 0, g.Renderer.Tokens.Colors["surface2"])
-	text.Draw(screen, "Wild Current", g.Renderer.Face, int(rect.X+16), int(rect.Y+30), g.Renderer.Tokens.Colors["text"])
-	room := g.State.Room()
-	centerText := "Unknown"
-	if room != nil {
-		centerText = room.Name + " - " + room.Island
-	}
-	text.Draw(screen, centerText, g.Renderer.Face, int(rect.X+360), int(rect.Y+30), g.Renderer.Tokens.Colors["textMuted"])
+func (g *Game) drawTerminalPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawSimplePanel(screen, rect, "Terminal")
+	pad := scaleX(8)
+	maxLogW := int(content.W - pad*2)
+	logH := content.H * 0.62
+	inputH := scaleY(36)
+	rowGap := scaleY(10)
+	lineH := scaleY(20)
 
-	chipX := rect.X + rect.W - 420
-	chips := []string{
-		"Day " + itoa(g.State.Day) + " " + itoa(g.State.TimeOfDay) + ":00",
-		"Money " + itoa(g.State.Money),
-		"Wanted " + itoa(g.State.Wanted),
-		"Morale " + itoa(g.State.Morale),
+	// Log area: wrap each entry to panel width so text never bleeds into right column
+	logRect := Rect{X: content.X, Y: content.Y, W: content.W, H: logH}
+	offset := int(g.UI.LogScroll)
+	if offset > len(g.State.Log)-1 {
+		offset = max(0, len(g.State.Log)-1)
 	}
-	for _, label := range chips {
-		rectChip := Rect{X: chipX, Y: rect.Y + 10, W: 90, H: 26}
-		g.Renderer.DrawChip(screen, rectChip, label, "neutral", *g.UI)
-		if pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), rectChip) {
-			g.UI.Tooltip = &TooltipState{Title: label, Body: "Status chip", Rect: Rect{X: rectChip.X, Y: rectChip.Y + 30, W: 140, H: 44}}
+	y := logRect.Y + scaleY(6)
+	logLineCount := 0
+	maxLogLines := int((logRect.H - scaleY(12)) / lineH)
+	for i := offset; i < len(g.State.Log) && logLineCount < maxLogLines; i++ {
+		entry := g.State.Log[i]
+		fullLine := entry.Time + " — " + entry.Text
+		lines := wrapText(fullLine, maxLogW, g.Renderer.Face)
+		for _, line := range lines {
+			if logLineCount >= maxLogLines {
+				break
+			}
+			text.Draw(screen, line, g.Renderer.Face, int(logRect.X+pad), int(y), g.Renderer.Tokens.Colors["text"])
+			y += lineH
+			logLineCount++
 		}
-		chipX += 100
 	}
+
+	// Input row (full width of terminal so suggestions/chips go below)
+	rowY := logRect.Y + logRect.H + rowGap
+	inputW := content.W - pad*2
+	inputRect := Rect{X: content.X + pad, Y: rowY, W: inputW, H: inputH}
+	strokeRoundedRect(screen, inputRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["border"])
+	inputBaseline := baselineCenter(inputRect, g.Renderer.Face)
+	prompt := "> " + g.UI.Input + g.cursorGlyph()
+	maxPromptW := int(inputRect.W) - 16
+	for len(prompt) > 0 && textWidth(prompt, g.Renderer.Face) > maxPromptW {
+		prompt = prompt[:len(prompt)-1]
+	}
+	text.Draw(screen, prompt, g.Renderer.Face, int(inputRect.X+scaleX(8)), inputBaseline, g.Renderer.Tokens.Colors["text"])
+	if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), inputRect) {
+		g.UI.Focus = "command"
+	}
+
+	// Suggestions row: only draw buttons that fit inside terminal panel
+	sugY := rowY + inputH + rowGap
+	btnW := scaleX(72)
+	btnH := scaleY(28)
+	btnGap := scaleX(6)
+	btnX := content.X + pad
+	rightEdge := content.X + content.W - pad
+	for _, label := range g.Cmd.Suggestions {
+		if btnX+btnW > rightEdge {
+			break
+		}
+		btnRect := Rect{X: btnX, Y: sugY, W: btnW, H: btnH}
+		if g.Renderer.DrawButton(screen, btnRect, titleCase(label), "ghost", *g.UI) {
+			g.submitCommand(label)
+		}
+		btnX += btnW + btnGap
+	}
+
+	// Exit chips on same row as suggestions, or next row if no space
+	chipW := scaleX(44)
+	chipGap := scaleX(4)
+	chipX := btnX + scaleX(8)
+	if chipX+chipW > rightEdge {
+		chipX = content.X + pad
+		sugY += btnH + scaleY(6)
+	}
+	exits := []string{}
+	if room := g.State.Room(); room != nil {
+		exits = exitKeys(room.Exits)
+	}
+	for _, exit := range exits {
+		if chipX+chipW > rightEdge {
+			break
+		}
+		label := titleCase(exit)
+		if len(exit) <= 2 {
+			label = strings.ToUpper(exit)
+		} else if exit == "north" || exit == "south" || exit == "east" || exit == "west" {
+			label = strings.ToUpper(exit[:1])
+		}
+		chip := Rect{X: chipX, Y: sugY, W: chipW, H: btnH}
+		if g.Renderer.DrawChip(screen, chip, label, "neutral", *g.UI) {
+			g.submitCommand("go " + exit)
+		}
+		chipX += chipW + chipGap
+	}
+}
+
+func (g *Game) drawVitalsPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawSimplePanel(screen, rect, "Vitals")
+	lineH := scaleY(22)
+	y := content.Y
+	maxW := int(content.W - scaleX(8))
+	text.Draw(screen, "HP "+itoa(g.State.Player.HP)+" / "+itoa(g.State.Player.MaxHP), g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+	y += lineH
+	statsLine := "Grit " + itoa(g.State.Player.Grit) + "  Charm " + itoa(g.State.Player.Charm) + "  Wits " + itoa(g.State.Player.Wits)
+	for _, line := range wrapText(statsLine, maxW, g.Renderer.Face) {
+		text.Draw(screen, line, g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+		y += lineH
+	}
+	fruit := "None"
+	if g.State.Player.ActiveFruit != "" {
+		fruit = g.State.Items[g.State.Player.ActiveFruit].Name
+	}
+	for _, line := range wrapText("Cursed Fruit: "+fruit, maxW, g.Renderer.Face) {
+		text.Draw(screen, line, g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+		y += lineH
+	}
+}
+
+func (g *Game) drawLoadSavePanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawSimplePanel(screen, rect, "Load / Save")
+	btnW := scaleX(72)
+	btnH := scaleY(28)
+	btnGap := scaleX(16)
+	saveRect := Rect{X: content.X, Y: content.Y, W: btnW, H: btnH}
+	if g.Renderer.DrawButton(screen, saveRect, "Save", "ghost", *g.UI) {
+		msg := g.State.Save("save1.json")
+		g.State.AddLog(msg, "system")
+	}
+	loadRect := Rect{X: content.X + btnW + btnGap, Y: content.Y, W: btnW, H: btnH}
+	if g.Renderer.DrawButton(screen, loadRect, "Load", "ghost", *g.UI) {
+		msg := g.State.Load("save1.json")
+		g.State.AddLog(msg, "system")
+	}
+}
+
+func (g *Game) drawShipStatusPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawSimplePanel(screen, rect, "Ship status")
+	room := g.State.Room()
+	loc := "Unknown"
+	if room != nil {
+		loc = room.Name + ", " + room.Island
+	}
+	lineH := scaleY(22)
+	y := content.Y
+	maxW := int(content.W - scaleX(8))
+	for _, line := range wrapText(loc, maxW, g.Renderer.Face) {
+		text.Draw(screen, line, g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+		y += lineH
+	}
+	text.Draw(screen, "Day "+itoa(g.State.Day)+"  "+itoa(g.State.TimeOfDay)+":00", g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+	y += lineH
+	text.Draw(screen, "$"+itoa(g.State.Money)+"  Wanted "+itoa(g.State.Wanted)+"  Morale "+itoa(g.State.Morale), g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+}
+
+func (g *Game) drawInventoryPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawSimplePanel(screen, rect, "Inventory")
+	startY := content.Y
+	y := content.Y
+	equipLine := "W: " + g.equippedLabel("weapon") + "  T: " + g.equippedLabel("tool") + "  C: " + g.equippedLabel("charm")
+	maxW := int(content.W - scaleX(8))
+	if textWidth(equipLine, g.Renderer.Face) > maxW {
+		for _, line := range wrapText(equipLine, maxW, g.Renderer.Face) {
+			text.Draw(screen, line, g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+			y += scaleY(20)
+		}
+	} else {
+		text.Draw(screen, equipLine, g.Renderer.Face, int(content.X), int(y), g.Renderer.Tokens.Colors["text"])
+		y += scaleY(24)
+	}
+	content.Y = y + scaleY(8)
+	content.H -= (y - startY) + scaleY(8)
+	searchH := scaleY(28)
+	searchRect := Rect{X: content.X, Y: content.Y, W: content.W, H: searchH}
+	strokeRoundedRect(screen, searchRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["border"])
+	text.Draw(screen, g.UI.InventoryQ, g.Renderer.Face, int(searchRect.X+scaleX(8)), baselineCenter(searchRect, g.Renderer.Face), g.Renderer.Tokens.Colors["text"])
+	if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), searchRect) {
+		g.UI.Focus = "inventory"
+	}
+	listY := searchRect.Y + searchH + scaleY(8)
+	rowH := scaleY(32)
+	rows := 0
+	for _, itemID := range g.State.Player.Inventory {
+		item := g.State.Items[itemID]
+		if g.UI.InventoryQ != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(g.UI.InventoryQ)) {
+			continue
+		}
+		rowRect := Rect{X: content.X, Y: listY, W: content.W, H: rowH - 4}
+		if g.Renderer.DrawListRow(screen, rowRect, item.Name, "×"+itoa(item.Slots), false, *g.UI) {
+			g.UI.SelectedItem = itemID
+			g.UI.Modal = &ModalState{Title: item.Name, Body: item.Desc, Actions: []string{"Use", "Equip", "Drop", "Close"}}
+		}
+		listY += rowH
+		rows++
+		if rows > 5 {
+			break
+		}
+	}
+	text.Draw(screen, "Slots "+itoa(g.State.InventorySlots())+" / "+itoa(g.State.Player.MaxSlots), g.Renderer.Face, int(content.X), int(rect.Y+rect.H-scaleY(12)), g.Renderer.Tokens.Colors["text"])
 }
 
 func (g *Game) drawMapPanel(screen *ebiten.Image, rect Rect) {
-	content := g.Renderer.DrawCard(screen, rect, "Map", "default")
-	localTab := Rect{X: content.X, Y: content.Y, W: 90, H: 28}
-	fogTab := Rect{X: content.X + 96, Y: content.Y, W: 90, H: 28}
-	worldTab := Rect{X: content.X + 192, Y: content.Y, W: 90, H: 28}
+	content := g.Renderer.DrawSimplePanel(screen, rect, "Map")
+	tw := scaleX(70)
+	th := scaleY(28)
+	tg := scaleX(8)
+	localTab := Rect{X: content.X, Y: content.Y, W: tw, H: th}
+	fogTab := Rect{X: content.X + tw + tg, Y: content.Y, W: tw, H: th}
+	worldTab := Rect{X: content.X + (tw+tg)*2, Y: content.Y, W: tw, H: th}
 	if g.Renderer.DrawTab(screen, localTab, "Local", g.UI.MapTab == "local", *g.UI) {
 		g.UI.MapTab = "local"
 	}
@@ -273,8 +491,8 @@ func (g *Game) drawMapPanel(screen *ebiten.Image, rect Rect) {
 		g.UI.MapTab = "world"
 	}
 
-	content.Y += 36
-	content.H -= 36
+	content.Y += scaleY(36)
+	content.H -= scaleY(36)
 	switch g.UI.MapTab {
 	case "local":
 		g.drawLocalMap(screen, content, false)
@@ -296,6 +514,9 @@ func (g *Game) drawLocalMap(screen *ebiten.Image, rect Rect, fog bool) {
 	}
 	centerX := rect.X + rect.W/2
 	centerY := rect.Y + rect.H/2
+	nodeScale := scaleX(36)
+	nodeSize := scaleX(16)
+	halfNode := nodeSize / 2
 	if g.UI.MapTarget != "" && g.State.Rooms[g.UI.MapTarget] != nil {
 		pathDirs := PathCommands(g.State.Rooms, room.ID, g.UI.MapTarget)
 		currentID := room.ID
@@ -304,8 +525,8 @@ func (g *Game) drawLocalMap(screen *ebiten.Image, rect Rect, fog bool) {
 		for _, dir := range pathDirs {
 			nextID := g.State.Rooms[currentID].Exits[dir]
 			nextRoom := g.State.Rooms[nextID]
-			nx := centerX + float64(nextRoom.CoordX-room.CoordX)*36
-			ny := centerY + float64(nextRoom.CoordY-room.CoordY)*36
+			nx := centerX + float64(nextRoom.CoordX-room.CoordX)*nodeScale
+			ny := centerY + float64(nextRoom.CoordY-room.CoordY)*nodeScale
 			vector.StrokeLine(screen, float32(cx), float32(cy), float32(nx), float32(ny), 2, g.Renderer.Tokens.Colors["accent"], false)
 			currentID = nextID
 			cx = nx
@@ -319,9 +540,9 @@ func (g *Game) drawLocalMap(screen *ebiten.Image, rect Rect, fog bool) {
 		if fog && !(g.State.Discovered[r.ID] || r.ID == room.ID || neighbor[r.ID]) {
 			continue
 		}
-		x := centerX + float64(r.CoordX-room.CoordX)*36
-		y := centerY + float64(r.CoordY-room.CoordY)*36
-		nodeRect := Rect{X: x - 8, Y: y - 8, W: 16, H: 16}
+		x := centerX + float64(r.CoordX-room.CoordX)*nodeScale
+		y := centerY + float64(r.CoordY-room.CoordY)*nodeScale
+		nodeRect := Rect{X: x - halfNode, Y: y - halfNode, W: nodeSize, H: nodeSize}
 		color := g.Renderer.Tokens.Colors["surface2"]
 		if r.ID == room.ID {
 			color = g.Renderer.Tokens.Colors["accent"]
@@ -330,14 +551,15 @@ func (g *Game) drawLocalMap(screen *ebiten.Image, rect Rect, fog bool) {
 			color = g.Renderer.Tokens.Colors["border"]
 		}
 		drawRoundedRect(screen, nodeRect, 6, color)
+		dotR := float32(scaleX(2))
 		if contains(r.Tags, "shop") {
-			vector.DrawFilledCircle(screen, float32(nodeRect.X+14), float32(nodeRect.Y+2), 2, g.Renderer.Tokens.Colors["warn"], false)
+			vector.DrawFilledCircle(screen, float32(nodeRect.X+nodeRect.W-4), float32(nodeRect.Y+4), dotR, g.Renderer.Tokens.Colors["warn"], false)
 		}
 		if contains(r.Tags, "danger") {
-			vector.DrawFilledCircle(screen, float32(nodeRect.X+14), float32(nodeRect.Y+12), 2, g.Renderer.Tokens.Colors["danger"], false)
+			vector.DrawFilledCircle(screen, float32(nodeRect.X+nodeRect.W-4), float32(nodeRect.Y+nodeRect.H-4), dotR, g.Renderer.Tokens.Colors["danger"], false)
 		}
 		if contains(r.Tags, "quest") {
-			vector.DrawFilledCircle(screen, float32(nodeRect.X+2), float32(nodeRect.Y+2), 2, g.Renderer.Tokens.Colors["accent"], false)
+			vector.DrawFilledCircle(screen, float32(nodeRect.X+4), float32(nodeRect.Y+4), dotR, g.Renderer.Tokens.Colors["accent"], false)
 		}
 		if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), nodeRect) {
 			g.UI.MapTarget = r.ID
@@ -345,11 +567,12 @@ func (g *Game) drawLocalMap(screen *ebiten.Image, rect Rect, fog bool) {
 		}
 	}
 	if g.UI.MapTarget != "" {
-		drawText(screen, "Target: "+g.State.Rooms[g.UI.MapTarget].Name, g.Renderer.Face, int(rect.X+8), int(rect.Y+rect.H-12), g.Renderer.Tokens.Colors["textMuted"], 1)
+		drawText(screen, "Target: "+g.State.Rooms[g.UI.MapTarget].Name, g.Renderer.Face, int(rect.X+scaleX(8)), int(rect.Y+rect.H-scaleY(12)), g.Renderer.Tokens.Colors["textMuted"], 1)
 	}
 }
 
 func (g *Game) drawWorldMap(screen *ebiten.Image, rect Rect) {
+	drawRoundedRect(screen, rect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
 	for _, route := range g.WorldMap.Routes {
 		from := g.WorldMap.Nodes[route.From]
 		to := g.WorldMap.Nodes[route.To]
@@ -363,17 +586,19 @@ func (g *Game) drawWorldMap(screen *ebiten.Image, rect Rect) {
 		}
 		vector.StrokeLine(screen, float32(x1), float32(y1), float32(x2), float32(y2), 2, lineColor, false)
 	}
+	worldNodeSize := scaleX(20)
+	worldNodeHalf := worldNodeSize / 2
 	for _, node := range g.WorldMap.Nodes {
-		nodeRect := Rect{X: rect.X + node.X - 10, Y: rect.Y + node.Y - 10, W: 20, H: 20}
-		drawRoundedRect(screen, nodeRect, 10, g.Renderer.Tokens.Colors["surface2"])
-		text.Draw(screen, node.Name, g.Renderer.Small, int(nodeRect.X+14), int(nodeRect.Y+6), g.Renderer.Tokens.Colors["textMuted"])
+		nodeRect := Rect{X: rect.X + node.X - worldNodeHalf, Y: rect.Y + node.Y - worldNodeHalf, W: worldNodeSize, H: worldNodeSize}
+		drawRoundedRect(screen, nodeRect, scaleX(10), g.Renderer.Tokens.Colors["surface2"])
+		text.Draw(screen, node.Name, g.Renderer.Small, int(nodeRect.X+scaleX(14)), int(nodeRect.Y+scaleY(6)), g.Renderer.Tokens.Colors["textMuted"])
 		if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), nodeRect) {
 			g.UI.MapTarget = node.ID
 		}
 	}
 	if g.UI.MapTarget != "" {
-		infoY := rect.Y + rect.H - 24
-		text.Draw(screen, "Route info:", g.Renderer.Small, int(rect.X+8), int(infoY), g.Renderer.Tokens.Colors["textMuted"])
+		infoY := rect.Y + rect.H - scaleY(24)
+		text.Draw(screen, "Route info:", g.Renderer.Small, int(rect.X+scaleX(8)), int(infoY), g.Renderer.Tokens.Colors["textMuted"])
 		for _, route := range g.WorldMap.Routes {
 			if route.From == g.State.Room().Island && route.To == g.UI.MapTarget {
 				line := route.To + " - Risk " + route.Risk
@@ -383,150 +608,15 @@ func (g *Game) drawWorldMap(screen *ebiten.Image, rect Rect) {
 				if route.To == "Navy Bastion" && g.State.Wanted >= 3 {
 					line += " - Locked (Wanted)"
 				}
-				text.Draw(screen, line, g.Renderer.Small, int(rect.X+90), int(infoY), g.Renderer.Tokens.Colors["text"])
+				text.Draw(screen, line, g.Renderer.Small, int(rect.X+scaleX(90)), int(infoY), g.Renderer.Tokens.Colors["text"])
 				break
 			}
 		}
 	}
 }
 
-func (g *Game) drawCenterPanel(screen *ebiten.Image, rect Rect) {
-	content := g.Renderer.DrawCard(screen, rect, "Scene", "default")
-	sceneRect := Rect{X: content.X, Y: content.Y, W: content.W, H: 180}
-	drawRoundedRect(screen, sceneRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
-	drawScene(screen, sceneRect, g.Renderer)
-	content.Y += 200
-	content.H -= 200
-	textRect := Rect{X: content.X, Y: content.Y, W: content.W, H: content.H}
-	drawRoundedRect(screen, textRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
-	roomText := g.State.Look()
-	lines := wrapText(roomText, int(textRect.W-16), g.Renderer.Face)
-	y := textRect.Y + 18
-	for _, line := range lines {
-		text.Draw(screen, line, g.Renderer.Face, int(textRect.X+8), int(y), g.Renderer.Tokens.Colors["text"])
-		y += 18
-		if y > textRect.Y+textRect.H-16 {
-			break
-		}
-	}
-	badges := []string{}
-	if g.State.Wanted >= 3 {
-		badges = append(badges, "Patrol Risk: High")
-	}
-	if g.State.HasItem("glyph_frag_1") || g.State.HasItem("glyph_frag_2") || g.State.HasItem("glyph_frag_3") {
-		badges = append(badges, "Quest Nearby")
-	}
-	x := textRect.X + 8
-	for _, badge := range badges {
-		chipRect := Rect{X: x, Y: textRect.Y + textRect.H - 26, W: float64(textWidth(badge, g.Renderer.Small) + 20), H: 20}
-		g.Renderer.DrawChip(screen, chipRect, badge, "warn", *g.UI)
-		x += chipRect.W + 8
-	}
-}
-
-func (g *Game) drawRightPanel(screen *ebiten.Image, rect Rect) {
-	cardH := (rect.H - 12) / 2
-	charCard := Rect{X: rect.X, Y: rect.Y, W: rect.W, H: cardH}
-	invCard := Rect{X: rect.X, Y: rect.Y + cardH + 12, W: rect.W, H: cardH}
-	g.drawCharacterCard(screen, charCard)
-	g.drawInventoryCard(screen, invCard)
-}
-
-func (g *Game) drawCharacterCard(screen *ebiten.Image, rect Rect) {
-	content := g.Renderer.DrawCard(screen, rect, "Character", "default")
-	text.Draw(screen, "HP "+itoa(g.State.Player.HP)+"/"+itoa(g.State.Player.MaxHP), g.Renderer.Face, int(content.X), int(content.Y+12), g.Renderer.Tokens.Colors["text"])
-	text.Draw(screen, "Grit "+itoa(g.State.Player.Grit), g.Renderer.Small, int(content.X), int(content.Y+32), g.Renderer.Tokens.Colors["textMuted"])
-	text.Draw(screen, "Charm "+itoa(g.State.Player.Charm), g.Renderer.Small, int(content.X+80), int(content.Y+32), g.Renderer.Tokens.Colors["textMuted"])
-	text.Draw(screen, "Wits "+itoa(g.State.Player.Wits), g.Renderer.Small, int(content.X+160), int(content.Y+32), g.Renderer.Tokens.Colors["textMuted"])
-	fruit := "None"
-	if g.State.Player.ActiveFruit != "" {
-		fruit = g.State.Items[g.State.Player.ActiveFruit].Name
-	}
-	text.Draw(screen, "Cursed Fruit: "+fruit, g.Renderer.Small, int(content.X), int(content.Y+52), g.Renderer.Tokens.Colors["textMuted"])
-}
-
-func (g *Game) drawInventoryCard(screen *ebiten.Image, rect Rect) {
-	content := g.Renderer.DrawCard(screen, rect, "Inventory", "default")
-	equipped := "Weapon: " + g.equippedLabel("weapon") + "  Tool: " + g.equippedLabel("tool") + "  Charm: " + g.equippedLabel("charm")
-	text.Draw(screen, equipped, g.Renderer.Small, int(content.X), int(content.Y+12), g.Renderer.Tokens.Colors["textMuted"])
-	content.Y += 18
-	content.H -= 18
-	searchRect := Rect{X: content.X, Y: content.Y, W: content.W, H: 28}
-	drawRoundedRect(screen, searchRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
-	text.Draw(screen, "Search: "+g.UI.InventoryQ, g.Renderer.Small, int(searchRect.X+8), int(searchRect.Y+18), g.Renderer.Tokens.Colors["textMuted"])
-	if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), searchRect) {
-		g.UI.Focus = "inventory"
-	}
-	listY := searchRect.Y + 36
-	rows := 0
-	for _, itemID := range g.State.Player.Inventory {
-		item := g.State.Items[itemID]
-		if g.UI.InventoryQ != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(g.UI.InventoryQ)) {
-			continue
-		}
-		rowRect := Rect{X: content.X, Y: listY, W: content.W, H: 30}
-		danger := item.Contraband
-		if g.Renderer.DrawListRow(screen, rowRect, item.Name, "x"+itoa(item.Slots), danger, *g.UI) {
-			g.UI.SelectedItem = itemID
-			g.UI.Modal = &ModalState{Title: item.Name, Body: item.Desc, Actions: []string{"Use", "Equip", "Drop", "Close"}}
-		}
-		listY += 34
-		rows++
-		if rows > 6 {
-			break
-		}
-	}
-	cap := "Slots " + itoa(g.State.InventorySlots()) + "/" + itoa(g.State.Player.MaxSlots)
-	text.Draw(screen, cap, g.Renderer.Small, int(content.X), int(rect.Y+rect.H-12), g.Renderer.Tokens.Colors["textMuted"])
-}
-
-func (g *Game) drawBottomPanel(screen *ebiten.Image, rect Rect) {
-	content := g.Renderer.DrawCard(screen, rect, "Log + Command", "default")
-	logRect := Rect{X: content.X, Y: content.Y, W: content.W, H: 70}
-	drawRoundedRect(screen, logRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
-	offset := int(g.UI.LogScroll)
-	if offset > len(g.State.Log)-1 {
-		offset = max(0, len(g.State.Log)-1)
-	}
-	y := logRect.Y + 16
-	for i := offset; i < len(g.State.Log) && i < offset+3; i++ {
-		entry := g.State.Log[i]
-		text.Draw(screen, entry.Time+" - "+entry.Text, g.Renderer.Small, int(logRect.X+8), int(y), g.Renderer.Tokens.Colors["textMuted"])
-		y += 18
-	}
-	inputRect := Rect{X: content.X, Y: logRect.Y + logRect.H + 12, W: content.W - 260, H: 28}
-	drawRoundedRect(screen, inputRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
-	text.Draw(screen, "> "+g.UI.Input+g.cursorGlyph(), g.Renderer.Face, int(inputRect.X+8), int(inputRect.Y+18), g.Renderer.Tokens.Colors["text"])
-	if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), inputRect) {
-		g.UI.Focus = "command"
-	}
-	btnX := inputRect.X + inputRect.W + 8
-	for _, label := range g.Cmd.Suggestions {
-		btnRect := Rect{X: btnX, Y: inputRect.Y, W: 80, H: 28}
-		if g.Renderer.DrawButton(screen, btnRect, titleCase(label), "ghost", *g.UI) {
-			g.submitCommand(label)
-		}
-		btnX += 84
-	}
-	chipX := content.X
-	exits := exitKeys(g.State.Room().Exits)
-	for _, exit := range exits {
-		label := titleCase(exit)
-		if len(exit) <= 2 {
-			label = strings.ToUpper(exit)
-		} else if exit == "north" || exit == "south" || exit == "east" || exit == "west" {
-			label = strings.ToUpper(exit[:1])
-		}
-		chip := Rect{X: chipX, Y: rect.Y + rect.H - 26, W: 60, H: 20}
-		if g.Renderer.DrawChip(screen, chip, label, "info", *g.UI) {
-			g.submitCommand("go " + exit)
-		}
-		chipX += 64
-	}
-}
-
 func (g *Game) cursorGlyph() string {
-	if g.UI.CursorBlink < 30 {
+	if g.UI.CursorBlink < 45 {
 		return "_"
 	}
 	return ""
@@ -565,18 +655,6 @@ func (g *Game) buildAutocomplete() []string {
 		}
 	}
 	return nil
-}
-
-func drawScene(screen *ebiten.Image, rect Rect, r *Renderer) {
-	sea := Rect{X: rect.X + 8, Y: rect.Y + 80, W: rect.W - 16, H: 80}
-	drawRoundedRect(screen, sea, r.Tokens.Radius["sm"], r.Tokens.Colors["surface"])
-	for i := 0; i < 4; i++ {
-		x := rect.X + 20 + float64(i)*80
-		vector.StrokeLine(screen, float32(x), float32(sea.Y+20), float32(x+40), float32(sea.Y+20), 2, r.Tokens.Colors["border"], false)
-	}
-	boat := Rect{X: rect.X + rect.W/2 - 30, Y: rect.Y + 50, W: 60, H: 20}
-	drawRoundedRect(screen, boat, 6, r.Tokens.Colors["accent"])
-	vector.StrokeLine(screen, float32(boat.X+30), float32(boat.Y), float32(boat.X+30), float32(boat.Y-30), 2, r.Tokens.Colors["textMuted"], false)
 }
 
 func (g *Game) handleModalAction(action string) {

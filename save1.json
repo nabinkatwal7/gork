@@ -1,0 +1,208 @@
+{
+  "Player": {
+    "Location": "dock",
+    "Inventory": [],
+    "Equipped": {
+      "charm": "",
+      "tool": "",
+      "weapon": ""
+    },
+    "MaxSlots": 12,
+    "HP": 24,
+    "MaxHP": 24,
+    "Grit": 2,
+    "Charm": 2,
+    "Wits": 2,
+    "ActiveFruit": ""
+  },
+  "RoomItems": {
+    "dock": [
+      "grappling"
+    ],
+    "ember_beach": [
+      "stone_fruit"
+    ],
+    "ember_forge": [
+      "glyph_frag_1",
+      "cutlass"
+    ],
+    "ember_village": [
+      "pearl"
+    ],
+    "jungle_grove": [
+      "medkit",
+      "balm"
+    ],
+    "jungle_path": [
+      "map_scrap"
+    ],
+    "market_lane": [
+      "spice",
+      "bribe",
+      "gadget_gull"
+    ],
+    "mist_library": [
+      "glyph_frag_3"
+    ],
+    "mist_market": [
+      "smoke_bomb"
+    ],
+    "mist_pier": [
+      "spark_fruit"
+    ],
+    "navy_gate": [],
+    "navy_outpost": [
+      "navy_badge",
+      "flintlock"
+    ],
+    "reef_shallows": [
+      "gale_fruit"
+    ],
+    "ruins_core": [],
+    "ruins_gate": [
+      "sun_coin"
+    ],
+    "ruins_hall": [
+      "glyph_frag_2"
+    ],
+    "ship_cabin": [
+      "nav_log",
+      "compass"
+    ],
+    "ship_deck": [
+      "rope",
+      "flare"
+    ],
+    "shipyard": [
+      "repair_kit",
+      "sea_boots"
+    ],
+    "sky_lift": [
+      "chart"
+    ],
+    "sky_shrine": [
+      "stone_key"
+    ],
+    "tavern": [
+      "rum"
+    ],
+    "town_square": [
+      "bounty_poster"
+    ]
+  },
+  "RoomEnemies": {
+    "dock": [],
+    "ember_beach": [],
+    "ember_forge": [
+      "smuggler"
+    ],
+    "ember_village": [],
+    "jungle_grove": [],
+    "jungle_path": [],
+    "market_lane": [],
+    "mist_library": [],
+    "mist_market": [],
+    "mist_pier": [],
+    "navy_gate": [],
+    "navy_outpost": [
+      "navy_captain"
+    ],
+    "reef_shallows": [
+      "reef_beast"
+    ],
+    "ruins_core": [
+      "rival_pirate"
+    ],
+    "ruins_gate": [],
+    "ruins_hall": [],
+    "ship_cabin": [],
+    "ship_deck": [],
+    "shipyard": [],
+    "sky_lift": [],
+    "sky_shrine": [],
+    "tavern": [],
+    "town_square": []
+  },
+  "Flags": {},
+  "NPCState": {
+    "bartender": "neutral",
+    "broker": "neutral",
+    "cook": "friendly",
+    "dockhand": "neutral",
+    "gadgeteer": "neutral",
+    "herbalist": "friendly",
+    "librarian": "friendly",
+    "officer": "hostile",
+    "priest": "neutral",
+    "rival": "hostile",
+    "shipwright": "neutral"
+  },
+  "Wanted": 0,
+  "Morale": 0,
+  "Money": 80,
+  "Day": 1,
+  "TimeOfDay": 10,
+  "Discovered": {
+    "dock": true,
+    "ship_cabin": true,
+    "ship_deck": true
+  },
+  "Quests": {
+    "broker": {
+      "ID": "broker",
+      "Name": "Rum for Keys",
+      "Desc": "Trade rum for a stone key.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    },
+    "dockhand": {
+      "ID": "dockhand",
+      "Name": "Bandaged Dockhand",
+      "Desc": "Help the dockhand and earn their trust.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    },
+    "gadgeteer": {
+      "ID": "gadgeteer",
+      "Name": "Spice for Gadgets",
+      "Desc": "Trade spice for a cipher lens.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    },
+    "main": {
+      "ID": "main",
+      "Name": "Glyph Stone Hunt",
+      "Desc": "Collect three Glyph Stone fragments and decipher their coordinates.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    },
+    "priest": {
+      "ID": "priest",
+      "Name": "Shrine Offering",
+      "Desc": "Bring a sun coin to the shrine keeper.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    },
+    "rival": {
+      "ID": "rival",
+      "Name": "Rival Showdown",
+      "Desc": "Defeat the rival pirate in the ruins.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    },
+    "shipwright": {
+      "ID": "shipwright",
+      "Name": "Hull Repairs",
+      "Desc": "Deliver a repair kit for a dock pass.",
+      "Active": true,
+      "Done": false,
+      "Outcome": ""
+    }
+  }
+}
