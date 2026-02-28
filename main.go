@@ -1,818 +1,613 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
-	"fmt"
-	"math/rand"
-	"os"
+	"log"
+	"math"
 	"strings"
-	"time"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/text"
+	"github.com/hajimehoshi/ebiten/v2/vector"
+)
+
+const (
+	screenW = 1280
+	screenH = 720
 )
 
 type Game struct {
-	Rooms      map[string]*Room
-	Items      map[string]*Item
-	NPCs       map[string]*NPC
-	Enemies    map[string]*Enemy
-	Player     Player
-	Flags      map[string]bool
-	Wanted     int
-	Reputation int
-	Running    bool
-}
-
-type Player struct {
-	Location  string
-	Inventory []string
-	MaxSlots  int
-	HP        int
-	HasFruit  bool
-}
-
-type Room struct {
-	Name    string
-	Desc    string
-	Exits   map[string]string
-	Items   []string
-	NPCs    []string
-	Enemies []string
-}
-
-type Item struct {
-	Name    string
-	Desc    string
-	Size    int
-	Illegal bool
-}
-
-type NPC struct {
-	Name string
-	Desc string
-	Talk string
-}
-
-type Enemy struct {
-	Name string
-	Desc string
-	HP   int
-}
-
-type SaveData struct {
-	Player      Player
-	RoomItems   map[string][]string
-	RoomEnemies map[string][]string
-	EnemyHP     map[string]int
-	Flags       map[string]bool
-	Wanted      int
-	Reputation  int
+	State    *GameState
+	UI       *UIState
+	Renderer *Renderer
+	Cmd      *CommandProcessor
+	WorldMap WorldMap
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	ebiten.SetWindowSize(screenW, screenH)
+	ebiten.SetWindowTitle("Wild Current: Pirate RPG")
 	game := NewGame()
-	game.Intro()
-	game.Loop()
+	if err := ebiten.RunGame(game); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func NewGame() *Game {
-	items := map[string]*Item{
-		"rope":         {Name: "coil of rope", Desc: "A salty coil, perfect for boarding or nonsense.", Size: 1},
-		"flare":        {Name: "signal flare", Desc: "A single flare that screams 'rescue me' or 'chase me'.", Size: 1},
-		"nav_log":      {Name: "navigation log", Desc: "A soggy logbook full of wind notes and doodles.", Size: 1},
-		"compass":      {Name: "brass compass", Desc: "It points north and occasionally to snacks.", Size: 1},
-		"grappling":    {Name: "grappling hook", Desc: "Hooky. Grippy. Dramatic.", Size: 1},
-		"conch":        {Name: "conch whistle", Desc: "Blow it and the sea seems to listen.", Size: 1},
-		"rum":          {Name: "bottle of rum", Desc: "Liquid courage with a pirate label.", Size: 1},
-		"spice":        {Name: "spice pouch", Desc: "A pouch of island spice, priceless to tinkerers.", Size: 1},
-		"bribe":        {Name: "bribe pouch", Desc: "Coins that clink with opportunity.", Size: 1},
-		"gull":         {Name: "wind-up gull", Desc: "A gadget gull that chirps when you crank it.", Size: 1},
-		"bounty":       {Name: "bounty poster", Desc: "A poster of some unlucky pirate. Not you. Yet.", Size: 1},
-		"navy_badge":   {Name: "navy badge", Desc: "A Bluecoat Navy badge. Possessing it is a bad idea.", Size: 1, Illegal: true},
-		"cutlass":      {Name: "rusty cutlass", Desc: "Seen more onions than battles.", Size: 2},
-		"flintlock":    {Name: "flintlock", Desc: "Old, loud, and still dangerous.", Size: 2, Illegal: true},
-		"chart":        {Name: "sea chart", Desc: "A chart labeled 'Wild Current'.", Size: 1},
-		"medkit":       {Name: "med kit", Desc: "Bandages, salve, and a lollipop.", Size: 1},
-		"balm":         {Name: "herbal balm", Desc: "Smells like a forest after rain.", Size: 1},
-		"cursed_fruit": {Name: "Gale-Gale Cursed Fruit", Desc: "Swirls like a storm cloud. It dares you to bite.", Size: 1},
-		"sun_coin":     {Name: "sun coin", Desc: "An ancient coin etched with a rising tide.", Size: 1},
-		"stone_key":    {Name: "stone key", Desc: "Heavy, carved with sea runes.", Size: 2},
-		"cipher_lens":  {Name: "cipher lens", Desc: "A lens that reveals hidden script.", Size: 1},
-		"coords":       {Name: "sky-etched coordinates", Desc: "The legendary treasure coordinates, glittering with promise.", Size: 1},
-		"map_scrap":    {Name: "map scrap", Desc: "A torn scrap showing jungle paths.", Size: 1},
-		"lantern":      {Name: "storm lantern", Desc: "A lantern that refuses to go out.", Size: 1},
-	}
-
-	rooms := map[string]*Room{
-		"ship_deck": {
-			Name:  "Rookie Deck",
-			Desc:  "Your scrappy ship bobs in the harbor. A handwritten note says: 'Try LOOK, INVENTORY, then GO NORTH.'",
-			Exits: map[string]string{"north": "dock", "south": "ship_cabin"},
-			Items: []string{"rope", "flare"},
-			NPCs:  []string{"cook"},
-		},
-		"ship_cabin": {
-			Name:  "Captain's Cabin",
-			Desc:  "A cramped cabin with maps, smells, and ambition.",
-			Exits: map[string]string{"north": "ship_deck"},
-			Items: []string{"nav_log", "compass"},
-			NPCs:  []string{"old_sailor"},
-		},
-		"dock": {
-			Name:  "Harbor Dock",
-			Desc:  "Workers shout over gulls. The island town sprawls north.",
-			Exits: map[string]string{"south": "ship_deck", "north": "town_square", "east": "market_lane", "west": "reef_shallows"},
-			Items: []string{"grappling", "conch"},
-			NPCs:  []string{"dockhand"},
-		},
-		"town_square": {
-			Name:  "Town Square",
-			Desc:  "A plaza of stalls and gossip. A Bluecoat officer watches the northern gate.",
-			Exits: map[string]string{"south": "dock", "east": "tavern", "west": "market_lane", "north": "navy_outpost"},
-			Items: []string{"bounty"},
-			NPCs:  []string{"officer"},
-		},
-		"tavern": {
-			Name:  "Tidal Tavern",
-			Desc:  "A tavern with sticky tables and louder rumors.",
-			Exits: map[string]string{"west": "town_square"},
-			Items: []string{"rum"},
-			NPCs:  []string{"bartender", "broker"},
-		},
-		"market_lane": {
-			Name:  "Market Lane",
-			Desc:  "Lanterns sway over traders hawking gizmos and spices.",
-			Exits: map[string]string{"west": "town_square", "east": "jungle_path", "south": "dock", "north": "signal_hill"},
-			Items: []string{"spice", "bribe", "gull"},
-			NPCs:  []string{"gadgeteer"},
-		},
-		"navy_outpost": {
-			Name:    "Bluecoat Outpost",
-			Desc:    "A stiff post of polished boots and judgment.",
-			Exits:   map[string]string{"south": "town_square"},
-			Items:   []string{"navy_badge", "cutlass", "flintlock"},
-			Enemies: []string{"navy_captain"},
-		},
-		"jungle_path": {
-			Name:  "Jungle Path",
-			Desc:  "Vines twist like ropes. The ruins lie somewhere north.",
-			Exits: map[string]string{"west": "market_lane", "east": "jungle_clearing", "north": "ruins_gate"},
-			Items: []string{"map_scrap"},
-		},
-		"jungle_clearing": {
-			Name:  "Jungle Clearing",
-			Desc:  "A clearing with medicinal plants and humming insects.",
-			Exits: map[string]string{"west": "jungle_path", "north": "signal_hill"},
-			Items: []string{"medkit", "balm"},
-			NPCs:  []string{"herbalist"},
-		},
-		"signal_hill": {
-			Name:  "Signal Hill",
-			Desc:  "A windy hill with a view of the Wild Current.",
-			Exits: map[string]string{"south": "market_lane", "east": "jungle_clearing"},
-			Items: []string{"chart", "lantern"},
-		},
-		"reef_shallows": {
-			Name:    "Reef Shallows",
-			Desc:    "Reefs glitter under the waves. The water looks deceptively calm.",
-			Exits:   map[string]string{"east": "dock"},
-			Items:   []string{"cursed_fruit"},
-			Enemies: []string{"reef_beast"},
-		},
-		"ruins_gate": {
-			Name:  "Ruins Gate",
-			Desc:  "A stone gate carved with a riddle: 'Speak the sea and the stone will hear.'",
-			Exits: map[string]string{"south": "jungle_path", "north": "ancient_ruin"},
-			Items: []string{"sun_coin"},
-			NPCs:  []string{"hermit"},
-		},
-		"ancient_ruin": {
-			Name:  "Ancient Ruin",
-			Desc:  "Dusty pillars hold a ceiling painted with storms.",
-			Exits: map[string]string{"south": "ruins_gate", "north": "inner_chamber"},
-		},
-		"inner_chamber": {
-			Name:  "Inner Chamber",
-			Desc:  "Glyphs glow faintly. A pedestal waits for a daring hand.",
-			Exits: map[string]string{"south": "ancient_ruin"},
-			Items: []string{"coords"},
-		},
-	}
-
-	npcs := map[string]*NPC{
-		"cook":       {Name: "ship cook", Desc: "A cook sharpening a spoon.", Talk: "Keep your hands busy and your belly fuller."},
-		"old_sailor": {Name: "old sailor", Desc: "An old sailor with a sea-glass eye.", Talk: "Storms respect those who respect storms."},
-		"dockhand":   {Name: "dockhand", Desc: "A dockhand with a bandaged arm.", Talk: "Got any supplies? This arm's itching."},
-		"officer":    {Name: "bluecoat officer", Desc: "A stern officer guarding the north gate.", Talk: "Outpost access is restricted. Papers or payment."},
-		"bartender":  {Name: "bartender", Desc: "A bartender polishing a mug.", Talk: "Rum loosens tongues and contracts."},
-		"broker":     {Name: "shady broker", Desc: "A broker with a grin that costs extra.", Talk: "I trade in secrets and keys. Bring me a bottle."},
-		"gadgeteer":  {Name: "gadgeteer", Desc: "A gadgeteer covered in soot.", Talk: "Spice makes my lenses sing."},
-		"herbalist":  {Name: "herbalist", Desc: "A gentle herbalist sorting leaves.", Talk: "The jungle speaks if you listen."},
-		"hermit":     {Name: "riddle hermit", Desc: "A hermit humming sea shanties.", Talk: "The gate likes the sea's voice. Loud and clear."},
-	}
-
-	enemies := map[string]*Enemy{
-		"reef_beast":   {Name: "reef beast", Desc: "A coral-covered brute with too many teeth.", HP: 12},
-		"navy_captain": {Name: "navy captain", Desc: "A Bluecoat captain with a polished saber.", HP: 14},
-		"navy_patrol":  {Name: "navy patrol", Desc: "A pair of Bluecoats with nets and attitude.", HP: 10},
-	}
-
 	return &Game{
-		Rooms:      rooms,
-		Items:      items,
-		NPCs:       npcs,
-		Enemies:    enemies,
-		Player:     Player{Location: "ship_deck", Inventory: []string{}, MaxSlots: 8, HP: 20},
-		Flags:      map[string]bool{},
-		Wanted:     0,
-		Reputation: 0,
-		Running:    true,
+		State:    NewGameState(),
+		UI:       NewUIState(),
+		Renderer: NewRenderer(),
+		Cmd:      NewCommandProcessor(),
+		WorldMap: BuildWorldMap(),
 	}
 }
 
-func (g *Game) Intro() {
-	fmt.Println("=== Wild Current: A Pirate Tale ===")
-	fmt.Println("You are a rookie captain chasing legendary treasure across the Wild Current.")
-	fmt.Println("Type HELP for commands. Try LOOK, INVENTORY, and GO NORTH to begin.")
-	fmt.Println()
-	g.Look()
-}
-
-func (g *Game) Loop() {
-	reader := bufio.NewReader(os.Stdin)
-	for g.Running {
-		fmt.Print("\n> ")
-		line, _ := reader.ReadString('\n')
-		g.HandleCommand(strings.TrimSpace(line))
+func (g *Game) Update() error {
+	g.UI.UpdateInput()
+	_, wheelY := ebiten.Wheel()
+	if wheelY != 0 {
+		g.UI.LogScroll = math.Max(0, g.UI.LogScroll-wheelY)
 	}
-}
-
-func (g *Game) HandleCommand(input string) {
-	if input == "" {
-		return
+	if g.State.Flags["quit"] {
+		return ebiten.Termination
 	}
-	parts := strings.Fields(strings.ToLower(input))
-	if len(parts) == 0 {
-		return
+	if g.UI.Modal != nil && g.UI.Modal.Result != "" {
+		g.handleModalAction(g.UI.Modal.Result)
+		g.UI.Modal = nil
 	}
 
-	verb := parts[0]
-	if dir := normalizeDir(verb); dir != "" {
-		g.Move(dir)
-		return
-	}
-
-	switch verb {
-	case "go", "move":
-		if len(parts) < 2 {
-			fmt.Println("Go where?")
-			return
-		}
-		g.Move(normalizeDir(parts[1]))
-	case "look", "l":
-		g.Look()
-	case "examine", "x":
-		if len(parts) < 2 {
-			fmt.Println("Examine what?")
-			return
-		}
-		g.Examine(strings.Join(parts[1:], " "))
-	case "take", "get":
-		if len(parts) < 2 {
-			fmt.Println("Take what?")
-			return
-		}
-		g.Take(strings.Join(parts[1:], " "))
-	case "drop":
-		if len(parts) < 2 {
-			fmt.Println("Drop what?")
-			return
-		}
-		g.Drop(strings.Join(parts[1:], " "))
-	case "inventory", "i":
-		g.Inventory()
-	case "talk":
-		if len(parts) < 2 {
-			fmt.Println("Talk to whom?")
-			return
-		}
-		g.Talk(strings.Join(parts[1:], " "))
-	case "use":
-		if len(parts) < 2 {
-			fmt.Println("Use what?")
-			return
-		}
-		g.Use(parts[1:], input)
-	case "attack":
-		if len(parts) < 2 {
-			fmt.Println("Attack whom?")
-			return
-		}
-		g.Attack(strings.Join(parts[1:], " "))
-	case "help":
-		g.Help()
-	case "save":
-		g.Save("save.json")
-	case "load":
-		g.Load("save.json")
-	case "quit", "exit":
-		fmt.Println("You lower the sails and end your tale... for now.")
-		g.Running = false
-	default:
-		fmt.Println("Unknown command. Type HELP for options.")
-	}
-}
-
-func normalizeDir(dir string) string {
-	switch dir {
-	case "north", "n":
-		return "north"
-	case "south", "s":
-		return "south"
-	case "east", "e":
-		return "east"
-	case "west", "w":
-		return "west"
-	default:
-		return ""
-	}
-}
-
-func (g *Game) Look() {
-	room := g.Rooms[g.Player.Location]
-	fmt.Printf("%s\n%s\n", room.Name, room.Desc)
-	if len(room.Items) > 0 {
-		fmt.Println("You see:")
-		for _, itemID := range room.Items {
-			fmt.Printf("- %s\n", g.Items[itemID].Name)
-		}
-	}
-	if len(room.NPCs) > 0 {
-		fmt.Println("People here:")
-		for _, npcID := range room.NPCs {
-			fmt.Printf("- %s\n", g.NPCs[npcID].Name)
-		}
-	}
-	if len(room.Enemies) > 0 {
-		fmt.Println("Threats present:")
-		for _, enemyID := range room.Enemies {
-			fmt.Printf("- %s\n", g.Enemies[enemyID].Name)
-		}
-	}
-	fmt.Printf("Exits: %s\n", strings.Join(exitList(room.Exits), ", "))
-}
-
-func exitList(exits map[string]string) []string {
-	keys := make([]string, 0, len(exits))
-	for key := range exits {
-		keys = append(keys, key)
-	}
-	return keys
-}
-
-func (g *Game) Move(direction string) {
-	if direction == "" {
-		fmt.Println("That direction makes no sense.")
-		return
-	}
-	room := g.Rooms[g.Player.Location]
-	dest, ok := room.Exits[direction]
-	if !ok {
-		fmt.Println("You can't go that way.")
-		return
-	}
-
-	if !g.CanEnter(dest) {
-		return
-	}
-
-	g.Player.Location = dest
-	g.Look()
-	g.MaybePatrol()
-}
-
-func (g *Game) CanEnter(dest string) bool {
-	if dest == "navy_outpost" && !g.Flags["bribed"] {
-		fmt.Println("The bluecoat officer blocks the way. A 'donation' might help.")
-		return false
-	}
-	if dest == "ruins_gate" && !g.Flags["mapDecoded"] {
-		fmt.Println("The jungle splits endlessly. You need better directions.")
-		return false
-	}
-	if dest == "ancient_ruin" && !g.Flags["ruinUnlocked"] {
-		fmt.Println("The stone gate is locked tight.")
-		return false
-	}
-	if dest == "inner_chamber" && !g.Flags["innerUnlocked"] {
-		fmt.Println("A sealed stone door bars the way. The riddle must be answered.")
-		return false
-	}
-	if dest == "reef_shallows" && g.Player.HasFruit {
-		g.EndGame("The cursed power drags you under the waves. The sea takes its price.")
-		return false
-	}
-	if g.Wanted >= 5 && (dest == "navy_outpost" || dest == "town_square") {
-		g.EndGame("Bluecoat Navy surrounds you. You are captured and hauled away.")
-		return false
-	}
-	return true
-}
-
-func (g *Game) Examine(name string) {
-	if itemID := g.FindItem(name, g.Player.Inventory); itemID != "" {
-		fmt.Println(g.Items[itemID].Desc)
-		return
-	}
-	room := g.Rooms[g.Player.Location]
-	if itemID := g.FindItem(name, room.Items); itemID != "" {
-		fmt.Println(g.Items[itemID].Desc)
-		return
-	}
-	if npcID := g.FindNPC(name, room.NPCs); npcID != "" {
-		fmt.Println(g.NPCs[npcID].Desc)
-		return
-	}
-	if enemyID := g.FindEnemy(name, room.Enemies); enemyID != "" {
-		fmt.Println(g.Enemies[enemyID].Desc)
-		return
-	}
-	fmt.Println("You find nothing like that to examine.")
-}
-
-func (g *Game) Take(name string) {
-	room := g.Rooms[g.Player.Location]
-	itemID := g.FindItem(name, room.Items)
-	if itemID == "" {
-		fmt.Println("You don't see that here.")
-		return
-	}
-	if !g.CanCarry(itemID) {
-		fmt.Println("You're carrying too much already.")
-		return
-	}
-	room.Items = removeID(room.Items, itemID)
-	g.Player.Inventory = append(g.Player.Inventory, itemID)
-	fmt.Printf("You take the %s.\n", g.Items[itemID].Name)
-	if g.Items[itemID].Illegal {
-		g.Wanted++
-		fmt.Println("That felt illegal. Wanted level rises.")
-	}
-}
-
-func (g *Game) Drop(name string) {
-	itemID := g.FindItem(name, g.Player.Inventory)
-	if itemID == "" {
-		fmt.Println("You don't have that.")
-		return
-	}
-	g.Player.Inventory = removeID(g.Player.Inventory, itemID)
-	g.Rooms[g.Player.Location].Items = append(g.Rooms[g.Player.Location].Items, itemID)
-	fmt.Printf("You drop the %s.\n", g.Items[itemID].Name)
-}
-
-func (g *Game) Inventory() {
-	if len(g.Player.Inventory) == 0 {
-		fmt.Println("Your pockets are empty.")
-		return
-	}
-	fmt.Printf("You carry (%d/%d slots):\n", g.InventorySlots(), g.Player.MaxSlots)
-	for _, itemID := range g.Player.Inventory {
-		fmt.Printf("- %s\n", g.Items[itemID].Name)
-	}
-}
-
-func (g *Game) Talk(name string) {
-	room := g.Rooms[g.Player.Location]
-	npcID := g.FindNPC(name, room.NPCs)
-	if npcID == "" {
-		fmt.Println("No one like that is here.")
-		return
-	}
-	fmt.Println(g.NPCs[npcID].Talk)
-}
-
-func (g *Game) Use(args []string, raw string) {
-	lower := strings.ToLower(raw)
-	parts := strings.Split(lower, " on ")
-	itemName := strings.TrimSpace(strings.TrimPrefix(parts[0], "use "))
-	target := ""
-	if len(parts) > 1 {
-		target = strings.TrimSpace(parts[1])
-	}
-	itemID := g.FindItem(itemName, g.Player.Inventory)
-	if itemID == "" {
-		fmt.Println("You don't have that to use.")
-		return
-	}
-
-	switch itemID {
-	case "rum":
-		if target == "shady broker" || target == "broker" {
-			if g.Flags["brokerPaid"] {
-				fmt.Println("The broker already got their drink.")
-				return
-			}
-			g.Flags["brokerPaid"] = true
-			g.Player.Inventory = removeID(g.Player.Inventory, "rum")
-			g.Player.Inventory = append(g.Player.Inventory, "stone_key")
-			fmt.Println("The broker trades the rum for a stone key.")
-			return
-		}
-	case "spice":
-		if target == "gadgeteer" {
-			if g.Flags["gadgeteerTraded"] {
-				fmt.Println("The gadgeteer already gave you their best lens.")
-				return
-			}
-			g.Flags["gadgeteerTraded"] = true
-			g.Player.Inventory = removeID(g.Player.Inventory, "spice")
-			g.Player.Inventory = append(g.Player.Inventory, "cipher_lens")
-			fmt.Println("The gadgeteer trades a cipher lens for the spice.")
-			return
-		}
-	case "medkit":
-		if target == "dockhand" {
-			if g.Flags["dockhandHelped"] {
-				fmt.Println("The dockhand already patched up.")
-				return
-			}
-			g.Flags["dockhandHelped"] = true
-			g.Reputation++
-			g.Player.Inventory = removeID(g.Player.Inventory, "medkit")
-			g.Player.Inventory = append(g.Player.Inventory, "sun_coin")
-			fmt.Println("You patch the dockhand. They slip you an ancient sun coin.")
-			return
-		}
-	case "bribe":
-		if target == "bluecoat officer" || target == "officer" {
-			if g.Flags["bribed"] {
-				fmt.Println("The officer already turned a blind eye.")
-				return
-			}
-			g.Flags["bribed"] = true
-			g.Player.Inventory = removeID(g.Player.Inventory, "bribe")
-			fmt.Println("The officer pockets the coins and steps aside.")
-			return
-		}
-	case "cipher_lens":
-		if target == "navigation log" || target == "nav log" || target == "log" {
-			if !g.HasItem("nav_log") {
-				fmt.Println("You need the navigation log to decipher.")
-				return
-			}
-			g.Flags["mapDecoded"] = true
-			fmt.Println("The cipher lens reveals a route to the jungle ruins.")
-			return
-		}
-	case "stone_key":
-		if target == "ruin gate" || target == "gate" {
-			g.Flags["ruinUnlocked"] = true
-			fmt.Println("The stone key turns. The gate groans open.")
-			return
-		}
-	case "conch":
-		if target == "stone door" || target == "door" {
-			g.Flags["innerUnlocked"] = true
-			fmt.Println("The conch's call echoes. The stone door slides aside.")
-			return
-		}
-	case "cursed_fruit":
-		g.Player.HasFruit = true
-		g.Player.Inventory = removeID(g.Player.Inventory, "cursed_fruit")
-		fmt.Println("Power surges through you! Wind answers your gestures, but the sea now hates you.")
-		return
-	case "coords":
-		if target == "helm" || target == "ship" || target == "wheel" {
-			g.EndingWithTreasure()
-			return
-		}
-	}
-
-	fmt.Println("Nothing happens.")
-}
-
-func (g *Game) Attack(name string) {
-	room := g.Rooms[g.Player.Location]
-	enemyID := g.FindEnemy(name, room.Enemies)
-	if enemyID == "" {
-		fmt.Println("No enemy by that name is here.")
-		return
-	}
-	enemy := g.Enemies[enemyID]
-	fmt.Printf("You lunge at the %s!\n", enemy.Name)
-	playerHit := rand.Float64() < 0.65
-	if g.Player.HasFruit {
-		playerHit = rand.Float64() < 0.8
-	}
-	if playerHit {
-		damage := rand.Intn(4) + 2
-		enemy.HP -= damage
-		fmt.Printf("You strike for %d damage.\n", damage)
+	if g.State.Combat != nil {
+		g.updateCombat()
 	} else {
-		fmt.Println("You miss and stumble.")
+		g.updateCommandInput()
 	}
 
-	if enemy.HP <= 0 {
-		fmt.Printf("The %s collapses.\n", enemy.Name)
-		room.Enemies = removeID(room.Enemies, enemyID)
-		if enemyID == "navy_captain" || enemyID == "navy_patrol" {
-			g.Wanted += 2
-			fmt.Println("The Navy will not forget this.")
+	if g.UI.ConfirmMove && g.UI.Modal == nil {
+		if targetRoom, ok := g.State.Rooms[g.UI.MapTarget]; ok {
+			body := "Travel to " + targetRoom.Name + "?"
+			g.UI.Modal = &ModalState{Title: "Travel", Body: body, Actions: []string{"Travel", "Cancel"}}
 		}
-		return
+		g.UI.ConfirmMove = false
+	}
+	if len(g.UI.MapPath) > 0 && g.State.Combat == nil && g.UI.Modal == nil {
+		next := g.UI.MapPath[0]
+		g.UI.MapPath = g.UI.MapPath[1:]
+		g.submitCommand("go " + next)
 	}
 
-	enemyHit := rand.Float64() < 0.5
-	if enemyHit {
-		damage := rand.Intn(3) + 1
-		g.Player.HP -= damage
-		fmt.Printf("The %s hits you for %d damage. (HP %d)\n", enemy.Name, damage, g.Player.HP)
-	} else {
-		fmt.Printf("The %s swings wide.\n", enemy.Name)
+	if done, ending := g.State.EndingsCheck(); done {
+		g.UI.Modal = &ModalState{Title: "Ending", Body: ending, Actions: []string{"Close"}}
 	}
-
-	if g.Player.HP <= 0 {
-		g.EndGame("You slump to the ground. The Bluecoat Navy captures you.")
-	}
+	return nil
 }
 
-func (g *Game) Help() {
-	fmt.Println("Commands:")
-	fmt.Println("- Movement: GO NORTH, NORTH, N (also SOUTH/EAST/WEST)")
-	fmt.Println("- Actions: LOOK, EXAMINE <thing>, TAKE <item>, DROP <item>")
-	fmt.Println("- Inventory: INVENTORY or I")
-	fmt.Println("- Interactions: TALK <npc>, USE <item> [ON <target>], ATTACK <enemy>")
-	fmt.Println("- Utility: HELP, SAVE, LOAD, QUIT")
-	fmt.Println("Goal: Find the sky-etched coordinates in the ancient ruins and escape.")
-	fmt.Println("Watch your Wanted Level and Reputation. Cursed Fruits grant power with a price.")
-}
-
-func (g *Game) Save(filename string) {
-	data := SaveData{
-		Player:      g.Player,
-		RoomItems:   map[string][]string{},
-		RoomEnemies: map[string][]string{},
-		EnemyHP:     map[string]int{},
-		Flags:       g.Flags,
-		Wanted:      g.Wanted,
-		Reputation:  g.Reputation,
+func (g *Game) Draw(screen *ebiten.Image) {
+	screen.Fill(g.Renderer.Tokens.Colors["background"])
+	g.drawLayout(screen)
+	g.Renderer.DrawTooltip(screen, g.UI.Tooltip)
+	if g.State.Combat != nil {
+		body := "Press Enter/Space to attack.\nEnemy: " + g.State.Combat.Enemy.Name + " (HP " + itoa(g.State.Combat.Enemy.HP) + ")"
+		combatModal := &ModalState{Title: "Combat", Body: body, Actions: []string{"Fight"}}
+		g.Renderer.DrawModal(screen, combatModal, *g.UI)
 	}
-	for id, room := range g.Rooms {
-		data.RoomItems[id] = append([]string{}, room.Items...)
-		data.RoomEnemies[id] = append([]string{}, room.Enemies...)
-	}
-	for id, enemy := range g.Enemies {
-		data.EnemyHP[id] = enemy.HP
-	}
-
-	raw, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		fmt.Println("Could not save game:", err)
-		return
-	}
-	if err := os.WriteFile(filename, raw, 0644); err != nil {
-		fmt.Println("Could not write save file:", err)
-		return
-	}
-	fmt.Println("Game saved to", filename)
-}
-
-func (g *Game) Load(filename string) {
-	raw, err := os.ReadFile(filename)
-	if err != nil {
-		fmt.Println("Could not load save file:", err)
-		return
-	}
-	var data SaveData
-	if err := json.Unmarshal(raw, &data); err != nil {
-		fmt.Println("Save file corrupted:", err)
-		return
-	}
-	fresh := NewGame()
-	*g = *fresh
-	g.Player = data.Player
-	g.Flags = data.Flags
-	g.Wanted = data.Wanted
-	g.Reputation = data.Reputation
-	for id, items := range data.RoomItems {
-		if room, ok := g.Rooms[id]; ok {
-			room.Items = items
+	if g.UI.Modal != nil {
+		if result := g.Renderer.DrawModal(screen, g.UI.Modal, *g.UI); result != "" {
+			g.UI.Modal.Result = result
 		}
 	}
-	for id, enemies := range data.RoomEnemies {
-		if room, ok := g.Rooms[id]; ok {
-			room.Enemies = enemies
+}
+
+func (g *Game) Layout(outsideW, outsideH int) (int, int) {
+	return screenW, screenH
+}
+
+func (g *Game) updateCommandInput() {
+	if inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		if g.UI.Focus == "inventory" {
+			g.UI.Focus = "command"
+			return
+		}
+		g.submitCommand(g.UI.Input)
+		g.UI.Input = ""
+		g.UI.HistoryIndex = -1
+		return
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyBackspace) {
+		if g.UI.Focus == "inventory" {
+			if len(g.UI.InventoryQ) > 0 {
+				g.UI.InventoryQ = g.UI.InventoryQ[:len(g.UI.InventoryQ)-1]
+			}
+		} else if len(g.UI.Input) > 0 {
+			g.UI.Input = g.UI.Input[:len(g.UI.Input)-1]
 		}
 	}
-	for id, hp := range data.EnemyHP {
-		if enemy, ok := g.Enemies[id]; ok {
-			enemy.HP = hp
+	for _, char := range ebiten.InputChars() {
+		if char == '\n' || char == '\r' {
+			continue
+		}
+		if g.UI.Focus == "inventory" {
+			g.UI.InventoryQ += string(char)
+		} else {
+			g.UI.Input += string(char)
 		}
 	}
-	fmt.Println("Game loaded.")
-	g.Look()
-}
-
-func (g *Game) MaybePatrol() {
-	if g.Wanted < 3 {
-		return
-	}
-	room := g.Rooms[g.Player.Location]
-	if room == nil || len(room.Enemies) > 0 {
-		return
-	}
-	if g.Player.Location == "ship_deck" || g.Player.Location == "ship_cabin" {
-		return
-	}
-	if rand.Float64() < 0.35 {
-		room.Enemies = append(room.Enemies, "navy_patrol")
-		fmt.Println("A Bluecoat Navy patrol storms in, nets ready.")
-	}
-}
-
-func (g *Game) EndingWithTreasure() {
-	if g.Player.Location != "ship_deck" {
-		fmt.Println("You need to be on your ship's helm to use the coordinates.")
-		return
-	}
-	if g.Player.HasFruit {
-		g.EndGame("You escape with the treasure, but the cursed power twists your fate. The sea will always hunt you.")
-		return
-	}
-	if g.Wanted >= 4 {
-		g.EndGame("You reach the helm, but the Bluecoat Navy intercepts you. Captured with treasure in hand.")
-		return
-	}
-	g.EndGame("You steer into the Wild Current and vanish with the treasure. Legends will whisper your name.")
-}
-
-func (g *Game) EndGame(message string) {
-	fmt.Println("\n=== The End ===")
-	fmt.Println(message)
-	g.Running = false
-}
-
-func (g *Game) FindItem(name string, list []string) string {
-	name = strings.ToLower(name)
-	for _, itemID := range list {
-		item := g.Items[itemID]
-		if strings.ToLower(item.Name) == name || itemID == name {
-			return itemID
+	if g.UI.Focus == "command" && inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
+		if len(g.UI.History) > 0 {
+			if g.UI.HistoryIndex < len(g.UI.History)-1 {
+				g.UI.HistoryIndex++
+			}
+			g.UI.Input = g.UI.History[g.UI.HistoryIndex]
 		}
+	}
+	if g.UI.Focus == "command" && inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
+		if g.UI.HistoryIndex > 0 {
+			g.UI.HistoryIndex--
+			g.UI.Input = g.UI.History[g.UI.HistoryIndex]
+		} else {
+			g.UI.HistoryIndex = -1
+			g.UI.Input = ""
+		}
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyTab) {
+		suggestions := g.buildAutocomplete()
+		if len(suggestions) > 0 {
+			g.UI.Input = suggestions[0]
+		}
+	}
+}
+
+func (g *Game) updateCombat() {
+	if g.State.Combat == nil {
+		return
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeySpace) || inpututil.IsKeyJustPressed(ebiten.KeyEnter) {
+		logLine := g.State.Combat.PlayerAttack(g.State)
+		g.State.AddLog(logLine, "combat")
+		if g.State.Combat.Resolved {
+			g.resolveCombat()
+			return
+		}
+		enemyLine := g.State.Combat.EnemyAttack(g.State)
+		if enemyLine != "" {
+			g.State.AddLog(enemyLine, "combat")
+		}
+		if g.State.Combat.Resolved {
+			g.resolveCombat()
+		}
+	}
+}
+
+func (g *Game) resolveCombat() {
+	if g.State.Combat == nil {
+		return
+	}
+	room := g.State.Room()
+	if g.State.Combat.Outcome == "enemy_down" {
+		room.Enemies = removeID(room.Enemies, g.State.Combat.EnemyID)
+		if g.State.Combat.EnemyID == "rival_pirate" && g.State.HasItem("treasure_core") {
+			g.State.Flags["treasureLost"] = true
+		}
+		if g.State.Combat.EnemyID == "rival_pirate" {
+			if quest, ok := g.State.Quests["rival"]; ok {
+				quest.Done = true
+				quest.Outcome = "You beat your rival in the ruins."
+			}
+		}
+	}
+	g.State.Combat = nil
+}
+
+func (g *Game) submitCommand(cmd string) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return
+	}
+	if len(g.UI.History) == 0 || g.UI.History[0] != cmd {
+		g.UI.History = append([]string{cmd}, g.UI.History...)
+	}
+	results := g.Cmd.Execute(g.State, cmd)
+	for _, line := range results {
+		g.State.AddLog(line, "system")
+	}
+	if g.State.Combat == nil {
+		g.State.ResolveQuests()
+	}
+}
+
+func (g *Game) drawLayout(screen *ebiten.Image) {
+	pad := g.Renderer.Tokens.Spacing["md"]
+	g.UI.Tooltip = nil
+	appBar := Rect{X: 0, Y: 0, W: screenW, H: 48}
+	leftPanel := Rect{X: pad, Y: appBar.H + pad, W: 320, H: 520}
+	centerPanel := Rect{X: leftPanel.X + leftPanel.W + pad, Y: appBar.H + pad, W: 560, H: 520}
+	rightPanel := Rect{X: centerPanel.X + centerPanel.W + pad, Y: appBar.H + pad, W: 320, H: 520}
+	bottomPanel := Rect{X: pad, Y: leftPanel.Y + leftPanel.H + pad, W: screenW - pad*2, H: 130}
+
+	g.drawAppBar(screen, appBar)
+	g.drawMapPanel(screen, leftPanel)
+	g.drawCenterPanel(screen, centerPanel)
+	g.drawRightPanel(screen, rightPanel)
+	g.drawBottomPanel(screen, bottomPanel)
+}
+
+func (g *Game) drawAppBar(screen *ebiten.Image, rect Rect) {
+	drawRoundedRect(screen, rect, 0, g.Renderer.Tokens.Colors["surface2"])
+	text.Draw(screen, "Wild Current", g.Renderer.Face, int(rect.X+16), int(rect.Y+30), g.Renderer.Tokens.Colors["text"])
+	room := g.State.Room()
+	centerText := "Unknown"
+	if room != nil {
+		centerText = room.Name + " - " + room.Island
+	}
+	text.Draw(screen, centerText, g.Renderer.Face, int(rect.X+360), int(rect.Y+30), g.Renderer.Tokens.Colors["textMuted"])
+
+	chipX := rect.X + rect.W - 420
+	chips := []string{
+		"Day " + itoa(g.State.Day) + " " + itoa(g.State.TimeOfDay) + ":00",
+		"Money " + itoa(g.State.Money),
+		"Wanted " + itoa(g.State.Wanted),
+		"Morale " + itoa(g.State.Morale),
+	}
+	for _, label := range chips {
+		rectChip := Rect{X: chipX, Y: rect.Y + 10, W: 90, H: 26}
+		g.Renderer.DrawChip(screen, rectChip, label, "neutral", *g.UI)
+		if pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), rectChip) {
+			g.UI.Tooltip = &TooltipState{Title: label, Body: "Status chip", Rect: Rect{X: rectChip.X, Y: rectChip.Y + 30, W: 140, H: 44}}
+		}
+		chipX += 100
+	}
+}
+
+func (g *Game) drawMapPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawCard(screen, rect, "Map", "default")
+	localTab := Rect{X: content.X, Y: content.Y, W: 90, H: 28}
+	fogTab := Rect{X: content.X + 96, Y: content.Y, W: 90, H: 28}
+	worldTab := Rect{X: content.X + 192, Y: content.Y, W: 90, H: 28}
+	if g.Renderer.DrawTab(screen, localTab, "Local", g.UI.MapTab == "local", *g.UI) {
+		g.UI.MapTab = "local"
+	}
+	if g.Renderer.DrawTab(screen, fogTab, "Fog", g.UI.MapTab == "fog", *g.UI) {
+		g.UI.MapTab = "fog"
+	}
+	if g.Renderer.DrawTab(screen, worldTab, "World", g.UI.MapTab == "world", *g.UI) {
+		g.UI.MapTab = "world"
+	}
+
+	content.Y += 36
+	content.H -= 36
+	switch g.UI.MapTab {
+	case "local":
+		g.drawLocalMap(screen, content, false)
+	case "fog":
+		g.drawLocalMap(screen, content, true)
+	default:
+		g.drawWorldMap(screen, content)
+	}
+}
+
+func (g *Game) drawLocalMap(screen *ebiten.Image, rect Rect, fog bool) {
+	room := g.State.Room()
+	if room == nil {
+		return
+	}
+	neighbor := map[string]bool{}
+	for _, dest := range room.Exits {
+		neighbor[dest] = true
+	}
+	centerX := rect.X + rect.W/2
+	centerY := rect.Y + rect.H/2
+	if g.UI.MapTarget != "" && g.State.Rooms[g.UI.MapTarget] != nil {
+		pathDirs := PathCommands(g.State.Rooms, room.ID, g.UI.MapTarget)
+		currentID := room.ID
+		cx := centerX
+		cy := centerY
+		for _, dir := range pathDirs {
+			nextID := g.State.Rooms[currentID].Exits[dir]
+			nextRoom := g.State.Rooms[nextID]
+			nx := centerX + float64(nextRoom.CoordX-room.CoordX)*36
+			ny := centerY + float64(nextRoom.CoordY-room.CoordY)*36
+			vector.StrokeLine(screen, float32(cx), float32(cy), float32(nx), float32(ny), 2, g.Renderer.Tokens.Colors["accent"], false)
+			currentID = nextID
+			cx = nx
+			cy = ny
+		}
+	}
+	for _, r := range g.State.Rooms {
+		if r.Island != room.Island {
+			continue
+		}
+		if fog && !(g.State.Discovered[r.ID] || r.ID == room.ID || neighbor[r.ID]) {
+			continue
+		}
+		x := centerX + float64(r.CoordX-room.CoordX)*36
+		y := centerY + float64(r.CoordY-room.CoordY)*36
+		nodeRect := Rect{X: x - 8, Y: y - 8, W: 16, H: 16}
+		color := g.Renderer.Tokens.Colors["surface2"]
+		if r.ID == room.ID {
+			color = g.Renderer.Tokens.Colors["accent"]
+		}
+		if fog && !g.State.Discovered[r.ID] && r.ID != room.ID {
+			color = g.Renderer.Tokens.Colors["border"]
+		}
+		drawRoundedRect(screen, nodeRect, 6, color)
+		if contains(r.Tags, "shop") {
+			vector.DrawFilledCircle(screen, float32(nodeRect.X+14), float32(nodeRect.Y+2), 2, g.Renderer.Tokens.Colors["warn"], false)
+		}
+		if contains(r.Tags, "danger") {
+			vector.DrawFilledCircle(screen, float32(nodeRect.X+14), float32(nodeRect.Y+12), 2, g.Renderer.Tokens.Colors["danger"], false)
+		}
+		if contains(r.Tags, "quest") {
+			vector.DrawFilledCircle(screen, float32(nodeRect.X+2), float32(nodeRect.Y+2), 2, g.Renderer.Tokens.Colors["accent"], false)
+		}
+		if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), nodeRect) {
+			g.UI.MapTarget = r.ID
+			g.UI.ConfirmMove = true
+		}
+	}
+	if g.UI.MapTarget != "" {
+		drawText(screen, "Target: "+g.State.Rooms[g.UI.MapTarget].Name, g.Renderer.Face, int(rect.X+8), int(rect.Y+rect.H-12), g.Renderer.Tokens.Colors["textMuted"], 1)
+	}
+}
+
+func (g *Game) drawWorldMap(screen *ebiten.Image, rect Rect) {
+	for _, route := range g.WorldMap.Routes {
+		from := g.WorldMap.Nodes[route.From]
+		to := g.WorldMap.Nodes[route.To]
+		x1 := rect.X + from.X
+		y1 := rect.Y + from.Y
+		x2 := rect.X + to.X
+		y2 := rect.Y + to.Y
+		lineColor := g.Renderer.Tokens.Colors["border"]
+		if route.To == "Navy Bastion" && g.State.Wanted >= 3 {
+			lineColor = g.Renderer.Tokens.Colors["danger"]
+		}
+		vector.StrokeLine(screen, float32(x1), float32(y1), float32(x2), float32(y2), 2, lineColor, false)
+	}
+	for _, node := range g.WorldMap.Nodes {
+		nodeRect := Rect{X: rect.X + node.X - 10, Y: rect.Y + node.Y - 10, W: 20, H: 20}
+		drawRoundedRect(screen, nodeRect, 10, g.Renderer.Tokens.Colors["surface2"])
+		text.Draw(screen, node.Name, g.Renderer.Small, int(nodeRect.X+14), int(nodeRect.Y+6), g.Renderer.Tokens.Colors["textMuted"])
+		if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), nodeRect) {
+			g.UI.MapTarget = node.ID
+		}
+	}
+	if g.UI.MapTarget != "" {
+		infoY := rect.Y + rect.H - 24
+		text.Draw(screen, "Route info:", g.Renderer.Small, int(rect.X+8), int(infoY), g.Renderer.Tokens.Colors["textMuted"])
+		for _, route := range g.WorldMap.Routes {
+			if route.From == g.State.Room().Island && route.To == g.UI.MapTarget {
+				line := route.To + " - Risk " + route.Risk
+				if route.Needs != "" {
+					line += " - Needs " + route.Needs
+				}
+				if route.To == "Navy Bastion" && g.State.Wanted >= 3 {
+					line += " - Locked (Wanted)"
+				}
+				text.Draw(screen, line, g.Renderer.Small, int(rect.X+90), int(infoY), g.Renderer.Tokens.Colors["text"])
+				break
+			}
+		}
+	}
+}
+
+func (g *Game) drawCenterPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawCard(screen, rect, "Scene", "default")
+	sceneRect := Rect{X: content.X, Y: content.Y, W: content.W, H: 180}
+	drawRoundedRect(screen, sceneRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
+	drawScene(screen, sceneRect, g.Renderer)
+	content.Y += 200
+	content.H -= 200
+	textRect := Rect{X: content.X, Y: content.Y, W: content.W, H: content.H}
+	drawRoundedRect(screen, textRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
+	roomText := g.State.Look()
+	lines := wrapText(roomText, int(textRect.W-16), g.Renderer.Face)
+	y := textRect.Y + 18
+	for _, line := range lines {
+		text.Draw(screen, line, g.Renderer.Face, int(textRect.X+8), int(y), g.Renderer.Tokens.Colors["text"])
+		y += 18
+		if y > textRect.Y+textRect.H-16 {
+			break
+		}
+	}
+	badges := []string{}
+	if g.State.Wanted >= 3 {
+		badges = append(badges, "Patrol Risk: High")
+	}
+	if g.State.HasItem("glyph_frag_1") || g.State.HasItem("glyph_frag_2") || g.State.HasItem("glyph_frag_3") {
+		badges = append(badges, "Quest Nearby")
+	}
+	x := textRect.X + 8
+	for _, badge := range badges {
+		chipRect := Rect{X: x, Y: textRect.Y + textRect.H - 26, W: float64(textWidth(badge, g.Renderer.Small) + 20), H: 20}
+		g.Renderer.DrawChip(screen, chipRect, badge, "warn", *g.UI)
+		x += chipRect.W + 8
+	}
+}
+
+func (g *Game) drawRightPanel(screen *ebiten.Image, rect Rect) {
+	cardH := (rect.H - 12) / 2
+	charCard := Rect{X: rect.X, Y: rect.Y, W: rect.W, H: cardH}
+	invCard := Rect{X: rect.X, Y: rect.Y + cardH + 12, W: rect.W, H: cardH}
+	g.drawCharacterCard(screen, charCard)
+	g.drawInventoryCard(screen, invCard)
+}
+
+func (g *Game) drawCharacterCard(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawCard(screen, rect, "Character", "default")
+	text.Draw(screen, "HP "+itoa(g.State.Player.HP)+"/"+itoa(g.State.Player.MaxHP), g.Renderer.Face, int(content.X), int(content.Y+12), g.Renderer.Tokens.Colors["text"])
+	text.Draw(screen, "Grit "+itoa(g.State.Player.Grit), g.Renderer.Small, int(content.X), int(content.Y+32), g.Renderer.Tokens.Colors["textMuted"])
+	text.Draw(screen, "Charm "+itoa(g.State.Player.Charm), g.Renderer.Small, int(content.X+80), int(content.Y+32), g.Renderer.Tokens.Colors["textMuted"])
+	text.Draw(screen, "Wits "+itoa(g.State.Player.Wits), g.Renderer.Small, int(content.X+160), int(content.Y+32), g.Renderer.Tokens.Colors["textMuted"])
+	fruit := "None"
+	if g.State.Player.ActiveFruit != "" {
+		fruit = g.State.Items[g.State.Player.ActiveFruit].Name
+	}
+	text.Draw(screen, "Cursed Fruit: "+fruit, g.Renderer.Small, int(content.X), int(content.Y+52), g.Renderer.Tokens.Colors["textMuted"])
+}
+
+func (g *Game) drawInventoryCard(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawCard(screen, rect, "Inventory", "default")
+	equipped := "Weapon: " + g.equippedLabel("weapon") + "  Tool: " + g.equippedLabel("tool") + "  Charm: " + g.equippedLabel("charm")
+	text.Draw(screen, equipped, g.Renderer.Small, int(content.X), int(content.Y+12), g.Renderer.Tokens.Colors["textMuted"])
+	content.Y += 18
+	content.H -= 18
+	searchRect := Rect{X: content.X, Y: content.Y, W: content.W, H: 28}
+	drawRoundedRect(screen, searchRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
+	text.Draw(screen, "Search: "+g.UI.InventoryQ, g.Renderer.Small, int(searchRect.X+8), int(searchRect.Y+18), g.Renderer.Tokens.Colors["textMuted"])
+	if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), searchRect) {
+		g.UI.Focus = "inventory"
+	}
+	listY := searchRect.Y + 36
+	rows := 0
+	for _, itemID := range g.State.Player.Inventory {
+		item := g.State.Items[itemID]
+		if g.UI.InventoryQ != "" && !strings.Contains(strings.ToLower(item.Name), strings.ToLower(g.UI.InventoryQ)) {
+			continue
+		}
+		rowRect := Rect{X: content.X, Y: listY, W: content.W, H: 30}
+		danger := item.Contraband
+		if g.Renderer.DrawListRow(screen, rowRect, item.Name, "x"+itoa(item.Slots), danger, *g.UI) {
+			g.UI.SelectedItem = itemID
+			g.UI.Modal = &ModalState{Title: item.Name, Body: item.Desc, Actions: []string{"Use", "Equip", "Drop", "Close"}}
+		}
+		listY += 34
+		rows++
+		if rows > 6 {
+			break
+		}
+	}
+	cap := "Slots " + itoa(g.State.InventorySlots()) + "/" + itoa(g.State.Player.MaxSlots)
+	text.Draw(screen, cap, g.Renderer.Small, int(content.X), int(rect.Y+rect.H-12), g.Renderer.Tokens.Colors["textMuted"])
+}
+
+func (g *Game) drawBottomPanel(screen *ebiten.Image, rect Rect) {
+	content := g.Renderer.DrawCard(screen, rect, "Log + Command", "default")
+	logRect := Rect{X: content.X, Y: content.Y, W: content.W, H: 70}
+	drawRoundedRect(screen, logRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
+	offset := int(g.UI.LogScroll)
+	if offset > len(g.State.Log)-1 {
+		offset = max(0, len(g.State.Log)-1)
+	}
+	y := logRect.Y + 16
+	for i := offset; i < len(g.State.Log) && i < offset+3; i++ {
+		entry := g.State.Log[i]
+		text.Draw(screen, entry.Time+" - "+entry.Text, g.Renderer.Small, int(logRect.X+8), int(y), g.Renderer.Tokens.Colors["textMuted"])
+		y += 18
+	}
+	inputRect := Rect{X: content.X, Y: logRect.Y + logRect.H + 12, W: content.W - 260, H: 28}
+	drawRoundedRect(screen, inputRect, g.Renderer.Tokens.Radius["sm"], g.Renderer.Tokens.Colors["surface2"])
+	text.Draw(screen, "> "+g.UI.Input+g.cursorGlyph(), g.Renderer.Face, int(inputRect.X+8), int(inputRect.Y+18), g.Renderer.Tokens.Colors["text"])
+	if g.UI.MouseJustUp && pointInRect(float64(g.UI.MouseX), float64(g.UI.MouseY), inputRect) {
+		g.UI.Focus = "command"
+	}
+	btnX := inputRect.X + inputRect.W + 8
+	for _, label := range g.Cmd.Suggestions {
+		btnRect := Rect{X: btnX, Y: inputRect.Y, W: 80, H: 28}
+		if g.Renderer.DrawButton(screen, btnRect, titleCase(label), "ghost", *g.UI) {
+			g.submitCommand(label)
+		}
+		btnX += 84
+	}
+	chipX := content.X
+	exits := exitKeys(g.State.Room().Exits)
+	for _, exit := range exits {
+		label := titleCase(exit)
+		if len(exit) <= 2 {
+			label = strings.ToUpper(exit)
+		} else if exit == "north" || exit == "south" || exit == "east" || exit == "west" {
+			label = strings.ToUpper(exit[:1])
+		}
+		chip := Rect{X: chipX, Y: rect.Y + rect.H - 26, W: 60, H: 20}
+		if g.Renderer.DrawChip(screen, chip, label, "info", *g.UI) {
+			g.submitCommand("go " + exit)
+		}
+		chipX += 64
+	}
+}
+
+func (g *Game) cursorGlyph() string {
+	if g.UI.CursorBlink < 30 {
+		return "_"
 	}
 	return ""
 }
 
-func (g *Game) FindNPC(name string, list []string) string {
-	name = strings.ToLower(name)
-	for _, npcID := range list {
-		npc := g.NPCs[npcID]
-		if strings.ToLower(npc.Name) == name || npcID == name {
-			return npcID
+func (g *Game) equippedLabel(slot string) string {
+	id := g.State.Player.Equipped[slot]
+	if id == "" {
+		return "None"
+	}
+	if item, ok := g.State.Items[id]; ok {
+		return item.Name
+	}
+	return "None"
+}
+
+func (g *Game) buildAutocomplete() []string {
+	base := strings.ToLower(strings.TrimSpace(g.UI.Input))
+	if base == "" {
+		return nil
+	}
+	options := []string{"look", "inventory", "talk", "use", "attack", "take", "drop", "buy", "sell", "save", "load", "help"}
+	room := g.State.Room()
+	for exit := range room.Exits {
+		options = append(options, "go "+exit)
+	}
+	for _, itemID := range room.Items {
+		options = append(options, "take "+strings.ToLower(g.State.Items[itemID].Name))
+	}
+	for _, npcID := range room.NPCs {
+		options = append(options, "talk "+strings.ToLower(g.State.NPCs[npcID].Name))
+	}
+	for _, option := range options {
+		if strings.HasPrefix(option, base) {
+			return []string{option}
 		}
 	}
-	return ""
+	return nil
 }
 
-func (g *Game) FindEnemy(name string, list []string) string {
-	name = strings.ToLower(name)
-	for _, enemyID := range list {
-		enemy := g.Enemies[enemyID]
-		if strings.ToLower(enemy.Name) == name || enemyID == name {
-			return enemyID
+func drawScene(screen *ebiten.Image, rect Rect, r *Renderer) {
+	sea := Rect{X: rect.X + 8, Y: rect.Y + 80, W: rect.W - 16, H: 80}
+	drawRoundedRect(screen, sea, r.Tokens.Radius["sm"], r.Tokens.Colors["surface"])
+	for i := 0; i < 4; i++ {
+		x := rect.X + 20 + float64(i)*80
+		vector.StrokeLine(screen, float32(x), float32(sea.Y+20), float32(x+40), float32(sea.Y+20), 2, r.Tokens.Colors["border"], false)
+	}
+	boat := Rect{X: rect.X + rect.W/2 - 30, Y: rect.Y + 50, W: 60, H: 20}
+	drawRoundedRect(screen, boat, 6, r.Tokens.Colors["accent"])
+	vector.StrokeLine(screen, float32(boat.X+30), float32(boat.Y), float32(boat.X+30), float32(boat.Y-30), 2, r.Tokens.Colors["textMuted"], false)
+}
+
+func (g *Game) handleModalAction(action string) {
+	if g.UI.Modal == nil {
+		return
+	}
+	switch g.UI.Modal.Title {
+	case "Ending":
+		if action == "Close" {
+			g.State.Flags["quit"] = true
+		}
+	case "Travel":
+		if action == "Travel" && g.UI.MapTarget != "" {
+			g.UI.MapPath = PathCommands(g.State.Rooms, g.State.Player.Location, g.UI.MapTarget)
+		}
+	case "Combat":
+		return
+	default:
+		if g.UI.SelectedItem != "" {
+			switch action {
+			case "Use":
+				g.submitCommand("use " + g.State.Items[g.UI.SelectedItem].Name)
+			case "Equip":
+				g.State.Player.Equipped["weapon"] = g.UI.SelectedItem
+				g.State.AddLog("Equipped "+g.State.Items[g.UI.SelectedItem].Name+".", "system")
+			case "Drop":
+				g.submitCommand("drop " + g.State.Items[g.UI.SelectedItem].Name)
+			case "Close":
+				// No action
+			}
+			g.UI.SelectedItem = ""
 		}
 	}
-	return ""
-}
-
-func removeID(list []string, id string) []string {
-	result := make([]string, 0, len(list))
-	for _, entry := range list {
-		if entry != id {
-			result = append(result, entry)
-		}
-	}
-	return result
-}
-
-func (g *Game) InventorySlots() int {
-	total := 0
-	for _, itemID := range g.Player.Inventory {
-		total += g.Items[itemID].Size
-	}
-	return total
-}
-
-func (g *Game) CanCarry(itemID string) bool {
-	return g.InventorySlots()+g.Items[itemID].Size <= g.Player.MaxSlots
-}
-
-func (g *Game) HasItem(itemID string) bool {
-	for _, id := range g.Player.Inventory {
-		if id == itemID {
-			return true
-		}
-	}
-	return false
 }
